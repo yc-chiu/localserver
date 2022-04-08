@@ -1,0 +1,851 @@
+<!-- turn on for jsp
+<%@ page language="java" contentType="text/html; charset=utf-8" pageEncoding="utf-8"%>
+<%
+	response.setHeader("Cache-Control", "no-cache"); // for HTTP 1.1
+	response.setHeader("Pragma", "no-cache"); // for HTTP 1.0
+	response.setDateHeader("Expires", 0); //  prevents caching at the proxy server
+	
+//	String strEncryptSessionkey=(String)session.getAttribute("strEncryptSessionkey");
+//	String strAesKey=(String)session.getAttribute("strAesKey");
+	
+%>
+-->
+
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<!-- No Cache禁用瀏覽器快取網頁. 但Chrome設定允取Cache後，元件收不到網頁request?????????????????????????????
+<meta http-equiv="Cache-Control" content="no-cache">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+-->
+
+<title></title>
+<script language="JavaScript" src="scripts/message.js" charset="utf-8"></script>
+<script type="text/javascript" src="scripts/json2.js"></script>  
+<script type="text/javascript" src="scripts/jquery-1.11.3.js"></script>  
+<script type="text/javascript" src="scripts/jquery.blockUI.js"></script>
+<script type="text/javascript" src="scripts/rollups/aes.js"></script>
+<script type="text/javascript" src="scripts/jsencrypt-master/bin/jsencrypt.js"></script>
+
+<script src="scripts/forge.min.js"></script> <!-- AES_GCM -->
+
+</head>
+<body onload="load()">
+
+<form name="myform">
+
+<p align="center"><font face="標楷體" color="blue" size="7">LocalServer Test</font></p>
+<p align="left"><font face="新細明體" size="4"></font></p>
+
+<hr align="left">
+</form>
+
+<script type="text/javascript">
+var countLength=0;
+
+var xmlhttp;
+var pluginPort=["13106","13107","13106","13107","13108","13106","13107","13108","13109","13106","13107","13108","13109","13110","13106"]; //Note:為解決Win10 Edge偶爾掃不到元件port，因此retry 掃port
+
+var pluginPortIndex=0;
+var pluginPortIndexMax=14;
+var RSACryptPubkey = ""; 
+var aesKey = "";   //sessionkey明文
+var aesIv = "";
+var stopInitPort = false;
+var localServer_UUID = "bfdd7679-24cd-4649-a5d8-909d19e31e37"; //為一固定值，供網頁確認目前連線到的 localServer 為預期連線之服務。
+var RaWebDomain = "";  //把憑證網站加入信任的網站: RAWeb的網站使用者是看不到的 (因為RAWeb是嵌在 iframe 裡)，所以要增加一個系統參數: RAWebDomain
+var selLanguage = "0";
+
+//load():嘗試連線到localServer，取得連接埠
+function load()
+{
+  selLanguage = document.getElementById("strLanguage").value;
+  initPort(initPortCallback);                                                     
+}
+
+
+function initPort(callbackFunc)
+{
+ 	$.blockUI({fadeIn: 0 });
+	if (pluginPortIndex > pluginPortIndexMax) {
+  	//alert("無法連線到載具伺服器");
+		//$.unblockUI();	
+		stopInitPort = true;
+		callbackFunc("", "");     		
+		return;
+	}
+    	
+	var url = "https://localhost:"+pluginPort[pluginPortIndex]+"/CHTCertTokenServer/checkport";
+
+	xmlhttp = new XMLHttpRequest();   // new HttpRequest instance 			
+	try {
+		xmlhttp.open("POST", url, true );
+    //Note: 跨瀏覽器元件掃 port 需要設定 timeout，以避免使用者有個localhost剛剛好用了同個port同個path 然後過了十分鐘才return response		
+    xmlhttp.timeout = 5000;
+		xmlhttp.onload = function()
+		{			
+			var responseText = xmlhttp.responseText;
+			var result = callbackFunc(responseText);
+			if (result != 0) {		
+				pluginPortIndex++;
+				initPort(callbackFunc);
+			}
+		}
+		xmlhttp.ontimeout = function() { 
+				pluginPortIndex++;
+				initPort(callbackFunc); 
+		};
+		xmlhttp.onerror = function() { 	
+				pluginPortIndex++;
+				initPort(callbackFunc); 
+		};
+		xmlhttp.send("");		
+	}
+	catch(err) {
+		//alert("readyState:" + xmlhttp.readyState + ",status:" + xmlhttp.status + ",err:" + err.message);
+		//$.unblockUI();
+    
+		//IE10 limitation: Origin與Host必須同區域，或者Origin所處區域的安全強度較Host來得高
+		//若使用者將https://localhost加入信任的網站，需要求使用者把憑證網站加入信任的網站。  
+		//Note:憑證網站有可能是嵌在 iframe 裡)，使用者是看不到的 ，所以請自行增加一個系統參數
+		var number = err.number & 0xFFFF;  		
+		var facilityCode = err.number>>16 & 0x1FFF;  
+		var description = err.description;  
+		if (number == 5 && facilityCode == 7) {
+			if(selLanguage=="1"){
+				err.message = description + "(請將憑證網站加入信任的網站。工具->網際網路選項->安全性->信任的網站，點選「網站」新增"+RaWebDomain+")";
+			}else if(selLanguage=="2"){
+				err.message = description + "(请将凭证网站加入信任的网站。工具->网际网路选项->安全性->信任的网站，点选「网站」新增"+RaWebDomain+")";
+			}else{
+				err.message = description + "(Please add the certificate application website to the trusted website. Tools->Internet Options->Security->Trusted Sites, click site add"+RaWebDomain+")";
+			}
+		}   
+        	
+		errorXmlhttpCallback(xmlhttp, err);			
+	}	
+}
+
+function initPortCallback(responseText)
+{
+	if (stopInitPort != false) { //無法連線到localServer
+		alert("無法連線到載具伺服器");
+		$.unblockUI();		
+		return 0;
+	}
+	try {	
+		if(responseText != ""){
+			obj = JSON.parse(responseText);
+			
+			if(obj.uuid != localServer_UUID){ //非綁定localServer，因此仍要繼續掃port
+				//alert("非綁定localServer");      			
+				return -1;			
+			}
+            			
+			if(obj.ret == 0x0){ //網頁連線成功後，自動執行initConnect 	  
+				alert("連接埠:"+pluginPort[pluginPortIndex]);
+				$.unblockUI();
+
+				//執行initConnect()前，先將AES key加密				
+				getEncryptedSessionkey(); 	     
+				initConnect();
+				
+				return 0;                         			     
+			}else{ //ex: 網頁Origin url為未授權的網站
+				ShowErrorMessage(obj.ret);
+				$.unblockUI();				
+				return 0;		
+			}		          
+		}else{
+				//alert("responseText is empty");
+				return -1;               
+		}  
+	} catch(err) {  //使用IE，如果port被其他程式佔去，可能會回404，因此仍要繼續掃port
+				return -1;
+	} 
+} 
+
+//處理localServer http連線錯誤狀況
+function errorXmlhttpCallback(xmlhttp, err)
+{
+    var exp = xmlhttp;
+  	if(!exp && typeof exp != "undefined" && exp != 0)
+  	{
+      alert("readyState:"+xmlhttp.readyState+",status:"+xmlhttp.status+",err:"+err.message);  	
+    }else
+    {
+      alert("err:"+err.message);
+    }  	
+  	$.unblockUI();
+}	
+
+//網頁為採用XMLHttpRequest + callback(非同步)範例    
+//Note:IE8/IE9不支援 "同步呼叫"，且在使用XMLHttpRequest會有限制(ex:不支援跨網域請求)
+function httpSendRequest(sendStr, callbackFunc)
+{
+  //載具伺服器
+	var url = "https://localhost:"+pluginPort[pluginPortIndex]+"/CHTCertTokenServer/";
+
+	xmlhttp = new XMLHttpRequest();   // new HttpRequest instance 			
+	try {
+		xmlhttp.open("POST", url, true );
+		xmlhttp.onload = function()
+		{			
+			var responseText = xmlhttp.responseText;
+			if (callbackFunc != initConnectCallback)
+			{
+			  if (responseText != "")
+			  {
+				  responseText = decryptMessage(responseText);
+				}
+			}
+			callbackFunc(responseText); 
+		}
+
+		//retry httpSendRequest機制: 為解決Win10 Edge偶爾連不到localServer(http error: 2ef3)，因此若發生連線錯誤的時候再試一次
+		xmlhttp.onerror = function()
+		{
+			httpSendRequestRetry(sendStr, callbackFunc);
+		}
+
+		xmlhttp.send(sendStr);		
+	}
+	catch(err) {
+		//alert("readyState:" + xmlhttp.readyState + ",status:" + xmlhttp.status + ",err:" + err.message);
+		//$.unblockUI();
+		
+		//IE10 limitation: Origin與Host必須同區域，或者Origin所處區域的安全強度較Host來得高
+		//若使用者將https://localhost加入信任的網站，需要求使用者把憑證網站加入信任的網站。  
+		//Note:憑證網站有可能是嵌在 iframe 裡)，使用者是看不到的 ，所以請自行增加一個系統參數
+		var number = err.number & 0xFFFF;  		
+		var facilityCode = err.number>>16 & 0x1FFF;  
+		var description = err.description;  
+		if (number == 5 && facilityCode == 7) {
+			if(selLanguage=="1"){
+			  err.message = description + "(請將憑證網站加入信任的網站。工具->網際網路選項->安全性->信任的網站，點選「網站」新增"+RaWebDomain+")";
+			}else if(selLanguage=="2"){
+			  err.message = description + "(请将凭证网站加入信任的网站。工具->网际网路选项->安全性->信任的网站，点选「网站」新增"+RaWebDomain+")";
+			}else{
+			  err.message = description + "(Please add the certificate application website to the trusted website. Tools->Internet Options->Security->Trusted Sites, click site add"+RaWebDomain+")";
+			}
+		}        
+                  
+		errorXmlhttpCallback(xmlhttp, err);		
+	}	
+
+}
+
+//retry httpSendRequest機制: 為解決Win10 Edge偶爾連不到localServer(http error: 2ef3)，因此若發生連線錯誤的時候再試一次
+function httpSendRequestRetry(sendStr, callbackFunc)
+{
+  //載具伺服器
+	var url = "https://localhost:"+pluginPort[pluginPortIndex]+"/CHTCertTokenServer/";
+
+	xmlhttp = new XMLHttpRequest();   // new HttpRequest instance 			
+	try {
+		xmlhttp.open("POST", url, true );
+		xmlhttp.onload = function()
+		{			
+			var responseText = xmlhttp.responseText;
+			if (callbackFunc != initConnectCallback)
+			{
+			  if (responseText != "")
+			  {
+				  responseText = decryptMessage(responseText);
+				}
+			}
+			callbackFunc(responseText); 
+		}
+
+		//retry httpSendRequest機制: 若發生連線錯誤的時候再試一次，仍失敗
+		xmlhttp.onerror = function()
+		{
+			alert("XMLHttpRequest fail again!"); //請自行處理錯誤顯示
+			$.unblockUI();   
+		}
+
+		xmlhttp.send(sendStr);		
+	}
+	catch(err) {
+		//alert("readyState:" + xmlhttp.readyState + ",status:" + xmlhttp.status + ",err:" + err.message);
+		//$.unblockUI();
+    
+		//IE10 limitation: Origin與Host必須同區域，或者Origin所處區域的安全強度較Host來得高
+		//若使用者將https://localhost加入信任的網站，需要求使用者把憑證網站加入信任的網站。  
+		//Note:憑證網站有可能是嵌在 iframe 裡)，使用者是看不到的 ，所以請自行增加一個系統參數
+		var number = err.number & 0xFFFF;  		
+		var facilityCode = err.number>>16 & 0x1FFF;  
+		var description = err.description;  
+		if (number == 5 && facilityCode == 7) {
+			if(selLanguage=="1"){
+			  err.message = description + "(請將憑證網站加入信任的網站。工具->網際網路選項->安全性->信任的網站，點選「網站」新增"+RaWebDomain+")";
+			}else if(selLanguage=="2"){
+			  err.message = description + "(请将凭证网站加入信任的网站。工具->网际网路选项->安全性->信任的网站，点选「网站」新增"+RaWebDomain+")";
+			}else{
+			  err.message = description + "(Please add the certificate application website to the trusted website. Tools->Internet Options->Security->Trusted Sites, click site add"+RaWebDomain+")";
+			}
+		}        
+                  
+		errorXmlhttpCallback(xmlhttp, err);		
+	}	
+
+}
+
+function decryptMessage(responseText)
+{            
+	var obj = JSON.parse(responseText);
+	if (obj.ret == 0x0)
+	{	
+		var responseText  = doAESDecrypt(obj.content);
+		return responseText;
+	}
+	else
+	{
+	  ShowErrorMessage(obj.ret);		
+		$.unblockUI();
+		return "";         		
+	}                      
+}
+
+//此範例可由Javascript產生Encrypted sessionkey
+//note: 正式上線時，需透過Server直接取得Encrypted sessionkey。因為將ras key暴露在javascript裡是非常不安全的作法
+function getEncryptedSessionkey()
+{
+	aesKey = document.getElementById("sessionkey").value;
+  document.getElementById("EncryptedSessionkey").value = doRSAEncrypt(aesKey);
+}
+
+function GetTokenSerialNo()
+{
+  	$.blockUI({fadeIn: 0 });
+  	
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+    argObject.func = "GetTokenSerialNo"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("GetTokenSerialNo: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";	
+    			
+    httpSendRequest(sendStr, GetTokenSerialNoCallback);
+
+}
+
+function GetTokenSerialNoCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+			alert("載具序號:"+obj.strTokenSerialNo);		
+			document.getElementById("strTokenSerialNo").value = obj.strTokenSerialNo;
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		          
+  }                 				
+
+	$.unblockUI();
+}
+
+function DetectToken()
+{
+  	$.blockUI({fadeIn: 0 });
+  	
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+  	argObject.strTokenSerialNo = document.getElementById("strTokenSerialNo").value;
+    argObject.func = "DetectToken"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("DetectToken: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";	
+    	  	
+    httpSendRequest(sendStr, DetectTokenCallback);
+}
+
+function DetectTokenCallback(responseText){
+	var strTokenType = document.getElementById("strTokenType").value;
+	var strTokenSerialNo = document.getElementById("strTokenSerialNo").value;
+
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+			alert("存在種類為:"+strTokenType+"序號為:"+strTokenSerialNo+"的載具");
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		        
+  }        		
+
+  $.unblockUI();
+}
+
+function DetectClientEnv()
+{
+  	$.blockUI({fadeIn: 0 });
+      
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+  	argObject.strTokenSerialNo = document.getElementById("strTokenSerialNo").value;
+    argObject.func = "DetectClientEnv"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("DetectClientEnv: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";	
+   	
+    httpSendRequest(sendStr, DetectClientEnvCallback);	
+}
+
+function DetectClientEnvCallback(responseText){
+	var bDTDRIVER = "0";
+	var strDTDRIVERVS = "";
+	var bDTTOKEN = "0";
+	var bDOPENSESSION = "0";
+	var bDTUSBLIMIT = "0";
+	var bDTSCARDSVR = "0";
+	
+	if(responseText != ""){
+  	obj = JSON.parse(responseText);
+  	
+  	if (obj.bDTSCARDSVR == true)
+  		bDTSCARDSVR = "1";
+  	else
+  		bDTSCARDSVR = "0";
+  
+  	if (obj.bDTDRIVER == true)
+  		bDTDRIVER = "1";
+  	else
+  		bDTDRIVER = "0";
+  
+  	if (obj.bDTUSBLIMIT == true)
+  		bDTUSBLIMIT = "1";
+  	else
+  		bDTUSBLIMIT = "0";
+  
+  	if (obj.bDTTOKEN == true)
+  		bDTTOKEN = "1";
+  	else
+  		bDTTOKEN = "0";
+  
+  	if (obj.bDOPENSESSION == true)
+  		bDOPENSESSION = "1";
+  	else
+  		bDOPENSESSION = "0";
+  			
+  	if (obj.strDTDRIVERVS)
+  		strDTDRIVERVS = obj.strDTDRIVERVS;
+  	else
+  		strDTDRIVERVS = "";      				
+      				
+  	if(obj.ret == 0x0){
+  		alert("bDTSCARDSVR = "+bDTSCARDSVR+", bDTDRIVER = "+bDTDRIVER+", strDTDRIVERVS = "+strDTDRIVERVS+", bDTUSBLIMIT = "+bDTUSBLIMIT+ ", bDTTOKEN = "+bDTTOKEN+", bDOPENSESSION = "+bDOPENSESSION);
+  	}else{ 		
+			ShowErrorMessage(obj.ret); 	  
+			alert("bDTSCARDSVR = "+bDTSCARDSVR+", bDTDRIVER = "+bDTDRIVER+", strDTDRIVERVS = "+strDTDRIVERVS+", bDTUSBLIMIT = "+bDTUSBLIMIT+ ", bDTTOKEN = "+bDTTOKEN+", bDOPENSESSION = "+bDOPENSESSION);          		
+  	}	
+  }	          
+									
+	$.unblockUI();				
+}
+
+function showVersion()
+{	
+  	$.blockUI({fadeIn: 0 });
+  	
+  	var argObject = new Object();  	
+    argObject.func = "GetVersion"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("showVersion: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";	
+   
+    httpSendRequest(sendStr, GetVersionCallback); 	
+}
+	
+function GetVersionCallback(responseText){
+	if(responseText != ""){
+  	obj = JSON.parse(responseText);
+  	alert(obj.version);	   
+  }       
+  
+  $.unblockUI();	
+}	
+
+
+//若需更新sessionkey，須再執行一次initConnect 
+function initConnect()
+{
+	$.blockUI({fadeIn: 0 }); 
+
+  document.all.initConnectRet.value = "";
+    	
+  //正式版應該由後台取得  
+	aesKey = document.getElementById("sessionkey").value;   //Note:須更新aesKey，以供之後加解密
+	
+  strEncryptSessionkey = document.getElementById("EncryptedSessionkey").value;    
+
+ 
+	var sendStr = "{\"func\":\"initConnect\",\"strInitData\":\""+strEncryptSessionkey+"\"}";
+	
+  httpSendRequest(sendStr, initConnectCallback);
+}
+
+function initConnectCallback(responseText){
+  if(responseText != "")
+  {
+  	obj = JSON.parse(responseText);
+  	//alert(obj.ret);
+  	if(obj.ret == 0x0){	//連線初始化成功					  
+  		document.getElementById("initConnectRet").value = obj.ret;      		  
+  	} else {
+  		document.getElementById("initConnectRet").value = obj.ret;
+			ShowErrorMessage(obj.ret);    			
+    }
+  }
+    				
+	$.unblockUI();	
+}
+
+function errorCallback(funName){
+	alert(funName+":POST Error!");
+	$.unblockUI();
+}
+
+function doRSAEncrypt(cipherText)
+{
+     // Encrypt with the public key...   
+    var encrypt = new JSEncrypt();
+    RSACryptPubkey =document.getElementById("RSACryptPubkey").value;
+    encrypt.setPublicKey(RSACryptPubkey);      
+    var encrypted = encrypt.encrypt(cipherText);        
+    return encrypted;      
+} 
+
+//AES CBC
+function doAESEncrypt_CBC(plainText)
+{
+    var key = CryptoJS.enc.Hex.parse(aesKey);
+    aesIv =document.getElementById("aesIv").value;
+    var iv  = CryptoJS.enc.Hex.parse(aesIv);
+
+    var encrypted = CryptoJS.AES.encrypt(plainText, key, { iv: iv });
+ 
+    return encrypted;
+}
+	
+//AES CBC
+function doAESDecrypt_CBC(cipherText)
+{
+    var key = CryptoJS.enc.Hex.parse(aesKey);
+    aesIv =document.getElementById("aesIv").value;    
+    var iv  = CryptoJS.enc.Hex.parse(aesIv);
+
+    var decrypted = CryptoJS.AES.decrypt(cipherText, key, { iv: iv });
+
+    return decrypted.toString(CryptoJS.enc.Utf8);	
+}
+
+//AES GCM
+function doAESEncrypt(plainText)	
+{
+  var key = forge.util.hexToBytes(aesKey);
+  iv = forge.util.hexToBytes(document.getElementById("aesIv").value);
+  
+  var GCMTagLength = 16; //GCMTag Length: 16 bytes
+  
+  // encrypt some bytes using GCM mode
+  var cipher = forge.cipher.createCipher('AES-GCM', key);
+  cipher.start({
+    iv: iv, // should be a 12-byte binary-encoded string or byte buffer
+  //  additionalData: 'binary-encoded string', // optional
+    tagLength: GCMTagLength*8 // optional, defaults to 128 bits
+  });
+  cipher.update(forge.util.createBuffer(plainText));
+  cipher.finish();
+  var encrypted = cipher.output;
+  var tag = cipher.mode.tag;
+  // outputs encrypted hex
+  console.log('encrypted.toHex(): ', encrypted.toHex());
+  // outputs authentication tag
+  console.log('tag.toHex(): ', tag.toHex());
+  
+  //output cipherText:  base64(GCMciphertext + GCMTag)
+  var base64EncryptedData = forge.util.encode64(forge.util.hexToBytes(encrypted.toHex()+tag.toHex()));  
+  return base64EncryptedData;
+}
+
+//AES GCM //input cipherText:  base64(GCMciphertext + GCMTag)
+function doAESDecrypt(cipherText)
+{
+  // Note: a key size of 32 bytes will use AES-256
+  //var key = forge.util.hexToBytes('0022277163741128509754295983040841817770812581997148583390329647'); //32 bytes
+  //var iv = forge.util.hexToBytes('8be168d2e0071f67ed6f30127f5998d2'); //16 bytes  
+  var key = forge.util.hexToBytes(aesKey);
+  iv = forge.util.hexToBytes(document.getElementById("aesIv").value);
+
+  //parsing input data
+  console.log('cipherText: ', cipherText);
+  var cipherTextHex = forge.util.bytesToHex(forge.util.createBuffer(forge.util.decode64(cipherText)));
+  console.log(cipherTextHex);  
+  var GCMTagLength = 16; //GCMTag Length: 16 bytes
+  var GCMciphertextHexLength = cipherTextHex.length - (GCMTagLength*2);  
+  var GCMciphertextHex = cipherTextHex.substring(0, GCMciphertextHexLength);
+  var GCMTagHex = cipherTextHex.substring(GCMciphertextHexLength, GCMciphertextHexLength+(GCMTagLength*2));
+  console.log('GCMciphertextHex(): ', GCMciphertextHex); //encrypted hex
+  console.log('GCMTagHex(): ', GCMTagHex); //authentication tag hex 
+
+  var encrypted = forge.util.createBuffer(forge.util.hexToBytes(GCMciphertextHex));
+  var tag = forge.util.createBuffer(forge.util.hexToBytes(GCMTagHex));
+       
+  //refer to https://github.com/digitalbazaar/forge    
+  // decrypt some bytes using GCM mode
+  var decipher = forge.cipher.createDecipher('AES-GCM', key);   
+  decipher.start({
+    iv: iv,
+  //  additionalData: 'binary-encoded string', // optional
+    tagLength: GCMTagLength*8, // optional, defaults to 128 bits
+    tag: tag // authentication tag from encryption
+  });
+  decipher.update(encrypted);
+  var pass = decipher.finish();
+  // pass is false if there was a failure (eg: authentication tag didn't match)
+  if(pass) {
+    // outputs decrypted hex
+    console.log('decipher.output.toHex(): ', decipher.output.toHex());
+    console.log('decipher.output.data: ', decipher.output.data);
+    return decipher.output.data;    
+  }else
+  {
+    console.log('decipher fail');
+    return "";
+  } 
+}
+
+function updateLanguage()  {
+	selLanguage = document.getElementById("strLanguage").value; 		
+}
+
+function ShowErrorMessage(nRc)  {	
+	alert(GetErrorMessage(nRc, selLanguage));	
+}
+
+function getLocalDate()
+{    
+  var year=new Date().getFullYear();//年
+  if (year< 1900) year = year + 1900;
+  var month = new Date().getMonth() + 1;//月
+  if (month < 10) month = '0' + month;
+  var day = new Date().getDate();//日
+  if (day < 10) day = '0' + day;
+  var hour = new Date().getHours();//小時
+  if (hour < 10) hour = '0' + hour;
+  var minute = new Date().getMinutes();//分鐘
+  if (minute < 10) minute = '0' + minute;
+  var second = new Date().getSeconds();//秒
+  if (second < 10) second = '0' + second;
+  var strlocalTime=year + '-' + month + '-' + day + ' ' + hour + ':' + minute + ':' + second;
+  //alert("strlocalTime = " +strlocalTime);
+  //alert("strlocalDate = " +day);  
+  return day;
+}
+
+function initToken()
+{
+  	$.blockUI({fadeIn: 0 });
+   
+//    var soPIN_tmp = "NDziAKzG4wbXD1y3W98iAw==&"+getLocalDate(); 
+      
+  	var argObject = new Object();  	
+   
+    argObject.tokenType = 2; //2:eToken //only support eToken 
+  	argObject.tokenLabel = "Demo BANK";  //指定Token的名稱
+  	argObject.pinMinLen = 6; //指定User PIN的最小長度 預設為6
+  	argObject.userCnt = 4;   //指定User PIN的重複錯誤次數 預設為4 
+  	argObject.userPIN = "12345678"; //指定User PIN的內容 預設為12345678
+    argObject.soPIN = "NDziAKzG4wbXD1y3W98iAw==&16"; //"Password1!";  //指定SO PIN的內容 預設為Password1!  	
+    argObject.soCnt = 5; //指定SO PIN的重複錯誤次數 預設為5
+    argObject.historySize = 10;            //指定User PIN的變更儲存歷史次數 預設為10次
+                
+    argObject.func = "initToken"; 
+    var orisendStr = JSON.stringify(argObject);
+  
+    var cipherText = doAESEncrypt(orisendStr);  
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";
+    	 
+    httpSendRequest(sendStr, initTokenCallback);
+}
+
+function initTokenCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+			alert("Done");
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		          
+  }    			
+
+	$.unblockUI();
+}
+
+function unBlockToken()
+{
+  	$.blockUI({fadeIn: 0 });
+
+//    var soPIN_tmp = "NDziAKzG4wbXD1y3W98iAw==&"+getLocalDate(); 
+      
+  	var argObject = new Object();  	
+    
+    argObject.tokenType = 2; //2:eToken //only support eToken 
+    argObject.soPIN = "NDziAKzG4wbXD1y3W98iAw==&16"; //"Password1!";  //指定SO PIN的內容 預設為Password1!  	
+  	argObject.userPIN = "11111111"; //指定User PIN的內容 預設為12345678
+  	argObject.userCnt = 4;   //指定User PIN的重複錯誤次數 預設為4 
+      	
+    argObject.func = "unBlockToken"; 
+    var orisendStr = JSON.stringify(argObject);
+  
+    var cipherText = doAESEncrypt(orisendStr);  
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";
+    	 
+    httpSendRequest(sendStr, unBlockTokenCallback);
+}
+
+function unBlockTokenCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+			alert("Done");
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		          
+  }    			
+
+	$.unblockUI();
+}
+
+function writeTokenObject()
+{
+  	$.blockUI({fadeIn: 0 });
+  
+  	var argObject = new Object();  	
+    
+    argObject.tokenType = 2; //2:eToken //only support eToken   	
+  	argObject.userPIN = "11111111"; //指定User PIN的內容
+  	argObject.tokenObjectValue = "Demo-0000000000000145";
+      	
+    argObject.func = "writeTokenObject"; 
+    var orisendStr = JSON.stringify(argObject);
+  
+    var cipherText = doAESEncrypt(orisendStr);  
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";
+    	 
+    httpSendRequest(sendStr, unBlockTokenCallback);
+}
+
+function writeTokenObjectCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+			alert("Done");
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		          
+  }    			
+
+	$.unblockUI();
+}
+
+
+function readTokenObject()
+{
+  	$.blockUI({fadeIn: 0 });
+  
+  	var argObject = new Object();  	
+    
+    argObject.tokenType = 2; //2:eToken //only support eToken   	
+      	
+    argObject.func = "readTokenObject"; 
+    var orisendStr = JSON.stringify(argObject);
+  
+    var cipherText = doAESEncrypt(orisendStr);  
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";
+    	 
+    httpSendRequest(sendStr, readTokenObjectCallback);
+}
+
+function readTokenObjectCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+		  alert(obj.tokenObjectValue);
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		          
+  }    			
+
+	$.unblockUI();
+}
+</script>
+
+<p align="left">
+
+<font face="標楷體" color="Red" size="3">連線後，先執行initConnect</font><br>
+<label for="RSACryptPubkey">Public Key</label><br/>
+    <textarea id="RSACryptPubkey" rows="15" cols="65">-----BEGIN PUBLIC KEY-----MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA8AzCwQ74oCuijJWPIq68Pgxu1t3Z1uGZwIUvfx3xO9JqK8z4BNCGl/GJEhTZOvsOjK0gu+mG9UTFYwOd3tcHT4T6VBWsnK62zzw+4Q3KZK74BqBj6k72pbtTPvZ+5le7cljym8V0WeIn9Zc2csucQfNx4P7cdIlSjUGWCty3/nHipMB5+3t6gf+Wpj8bxE0yWtE23B6au7UQQqo0Zk2kcYRGXaz05cgPK0EPjS0YGqs6/cjerKoCMdFBAkLGfHuFqaEp0R+X3hpqebwp3MdkVrR+uvkrpON9vw6bu5q/fBzGKghgoCmpGFInK6AhkhGWW8RJ7EdWuTbtweYjsODrqQIDAQAB-----END PUBLIC KEY-----</textarea><br/>
+AES IV: <input type="text" id="aesIv" name="aesIv" size="50" value="8be168d2e0071f67ed6f30127f5998d2" /> <br/>
+sessionkey:<textarea id="sessionkey" name="sessionkey" rows="1" cols="64" value="">0022277163741128509754295983040841817770812581997148583390329647</textarea>(256-bit key,WordArray長度64長度64)<br>
+Encrypted sessionkey:<textarea id="EncryptedSessionkey" name="EncryptedSessionkey" rows="10" cols="80">XAozQAUNzOXaLQYwZbsjMY6DB7MJ4UuNdJsv+RVygqm1+B7ekow0nL5kIwOA5GoaG35AwaPCS1eU+mXhjq3a8r+UE65QV7CDNPG8921EGEvzlWg6PxB+kVvNPOhz0bhZ3txWxElCaXm/StlnPQ0cikFfdwMufo4J84IwxvBtdEy/1xrIyom6XJw6L1zeLwueV0taVgrbslw/5gIu7Nsi4/WXQ/UOfg+cRwv3m+RPWy73NDGYHQr69dq2BDMGwanuHo55nL+k34oQ1rLpLEBY3dpGXSREazM0kXILlmDsBOuvJZo/WCfDX2teH9G9iauLnO/6TVsEZhL80O0ne7QnGQ==</textarea>
+<input type="button" value="getEncryptedSessionkey(for RD)" onclick="getEncryptedSessionkey()">(此為RD測試用。建議正式上線時，需透過Web Server直接取得Encrypted sessionkey)<br><br>
+<br><input type="button" value="initConnect" onclick="initConnect()">(步驟:需先設定sessionkey->產生Encrypted sessionkey->最後再執行initConnect)<br>
+Ret:<input type="text" id="initConnectRet" name="initConnectRet"><br>
+<hr>
+
+<P align=center><FONT face=標楷體 color=blue size=7>發卡-基本發卡功能</FONT></P>
+目前只支援eToken載具，且不支援同時插多支載具。
+<HR>
+<INPUT TYPE = "button" value = "載具初始化" onclick = "initToken()"><BR>
+<HR>
+<INPUT TYPE = "button" value = "載具解鎖" onclick = "unBlockToken()"><BR>
+<HR>
+<INPUT TYPE = "button" value = "寫入Object到載具" onclick = "writeTokenObject()"><BR>
+<HR>
+<INPUT TYPE = "button" value = "讀取載具某一指定Object" onclick = "readTokenObject()"><BR>
+<HR>
+<HR>
+
+
+<P align=center><FONT face=標楷體 color=blue size=7>輔助功能-載具環境檢測</FONT></P>
+<HR>
+元件版本<BR>
+<input type = "button" value = "元件版本" onclick = "showVersion()"><BR>
+
+語系:<input type="text" id="strLanguage" name="strLanguage" onchange = "updateLanguage()" size="1" value="1">(0:英文 1:繁體中文 2:簡體中文, 未設或其它值為繁體中文)<br>
+</p>
+<div id="DefaultTokenType" style="display: none;">
+<hr>
+<hr>
+載具指定<BR>
+種類:<input type="text" id="strTokenType" name="strTokenType" size=1 value="2">(2:eToken, 發卡功能only support eToken)
+<BR>
+</div>
+序號:<input type="text" id="strTokenSerialNo" name="strTokenSerialNo" size=50 value="">
+<BR>
+<HR>
+環境檢測使用<BR>
+<input type = "button" value = "環境檢測" onclick = "DetectClientEnv()"><BR>
+<HR>
+取得載具序號<BR>
+<INPUT TYPE = "button" value = "取得載具序號" onclick = "GetTokenSerialNo()"><BR>
+<HR>
+檢查載具是否存在<BR>
+<INPUT TYPE = "button" value = "檢查載具是否存在" onclick = "DetectToken()"><BR>
+
+
+</body></html>
