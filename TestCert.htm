@@ -1,0 +1,901 @@
+<!-- turn on for jsp
+<%@ page language="java" contentType="text/html; charset=utf-8" pageEncoding="utf-8"%>
+<%
+	response.setHeader("Cache-Control", "no-cache"); // for HTTP 1.1
+	response.setHeader("Pragma", "no-cache"); // for HTTP 1.0
+	response.setDateHeader("Expires", 0); //  prevents caching at the proxy server
+	
+//	String strEncryptSessionkey=(String)session.getAttribute("strEncryptSessionkey");
+//	String strAesKey=(String)session.getAttribute("strAesKey");
+	
+%>
+-->
+
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<!-- No Cache禁用瀏覽器快取網頁. 但Chrome設定允取Cache後，元件收不到網頁request?????????????????????????????
+<meta http-equiv="Cache-Control" content="no-cache">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+-->
+
+<title></title>
+<script language="JavaScript" src="scripts/message.js" charset="utf-8"></script>
+<script type="text/javascript" src="scripts/json2.js"></script>  
+<script type="text/javascript" src="scripts/jquery-1.11.3.js"></script>  
+<script type="text/javascript" src="scripts/jquery.blockUI.js"></script>
+<script type="text/javascript" src="scripts/rollups/aes.js"></script>
+<script type="text/javascript" src="scripts/jsencrypt-master/bin/jsencrypt.js"></script>
+
+
+</head>
+<body onload="load()">
+
+<form name="myform">
+
+<p align="center"><font face="標楷體" color="blue" size="7">LocalServer Test</font></p>
+<p align="left"><font face="新細明體" size="4"></font></p>
+
+<hr align="left">
+</form>
+
+<script type="text/javascript">
+var countLength=0;
+
+var xmlhttp;
+var pluginPort=["13101","13102","13101","13102","13103","13101","13102","13103","13104","13101","13102","13103","13104","13105","13101"]; //Note:為解決Win10 Edge偶爾掃不到元件port，因此retry 掃port
+
+var pluginPortIndex=0;
+var pluginPortIndexMax=14;
+var RSACryptPubkey = ""; 
+var aesKey = "";   //sessionkey明文
+var aesIv = "";
+var stopInitPort = false;
+var localServer_UUID = "7e00a13c-decb-4ece-8b61-6aa5565145a0"; //為一固定值，供網頁確認目前連線到的 localServer 為預期連線之服務。
+var RaWebDomain = "";  //把憑證網站加入信任的網站: RAWeb的網站使用者是看不到的 (因為RAWeb是嵌在 iframe 裡)，所以要增加一個系統參數: RAWebDomain
+var selLanguage = "0";
+
+//load():嘗試連線到localServer，取得連接埠
+function load()
+{
+  selLanguage = document.getElementById("strLanguage").value;
+  initPort(initPortCallback);                                                     
+}
+
+
+function initPort(callbackFunc)
+{
+ 	$.blockUI({fadeIn: 0 });
+	if (pluginPortIndex > pluginPortIndexMax) {
+  	//alert("無法連線到載具伺服器");
+		//$.unblockUI();	
+		stopInitPort = true;
+		callbackFunc("", "");     		
+		return;
+	}
+    	
+	var url = "https://localhost:"+pluginPort[pluginPortIndex]+"/CHTCertTokenServer/checkport";
+
+	xmlhttp = new XMLHttpRequest();   // new HttpRequest instance 			
+	try {
+		xmlhttp.open("POST", url, true );
+    //Note: 跨瀏覽器元件掃 port 需要設定 timeout，以避免使用者有個localhost剛剛好用了同個port同個path 然後過了十分鐘才return response		
+    xmlhttp.timeout = 5000;
+		xmlhttp.onload = function()
+		{			
+			var responseText = xmlhttp.responseText;
+			var result = callbackFunc(responseText);
+			if (result != 0) {		
+				pluginPortIndex++;
+				initPort(callbackFunc);
+			}
+		}
+		xmlhttp.ontimeout = function() { 
+				pluginPortIndex++;
+				initPort(callbackFunc); 
+		};
+		xmlhttp.onerror = function() { 	
+				pluginPortIndex++;
+				initPort(callbackFunc); 
+		};
+		xmlhttp.send("");		
+	}
+	catch(err) {
+		//alert("readyState:" + xmlhttp.readyState + ",status:" + xmlhttp.status + ",err:" + err.message);
+		//$.unblockUI();
+    
+		//IE10 limitation: Origin與Host必須同區域，或者Origin所處區域的安全強度較Host來得高
+		//若使用者將https://localhost加入信任的網站，需要求使用者把憑證網站加入信任的網站。  
+		//Note:憑證網站有可能是嵌在 iframe 裡)，使用者是看不到的 ，所以請自行增加一個系統參數
+		var number = err.number & 0xFFFF;  		
+		var facilityCode = err.number>>16 & 0x1FFF;  
+		var description = err.description;  
+		if (number == 5 && facilityCode == 7) {
+			if(selLanguage=="1"){
+				err.message = description + "(請將憑證網站加入信任的網站。工具->網際網路選項->安全性->信任的網站，點選「網站」新增"+RaWebDomain+")";
+			}else if(selLanguage=="2"){
+				err.message = description + "(请将凭证网站加入信任的网站。工具->网际网路选项->安全性->信任的网站，点选「网站」新增"+RaWebDomain+")";
+			}else{
+				err.message = description + "(Please add the certificate application website to the trusted website. Tools->Internet Options->Security->Trusted Sites, click site add"+RaWebDomain+")";
+			}
+		}   
+        	
+		errorXmlhttpCallback(xmlhttp, err);			
+	}	
+}
+
+function initPortCallback(responseText)
+{
+	if (stopInitPort != false) { //無法連線到localServer
+		alert("無法連線到載具伺服器");
+		$.unblockUI();		
+		return 0;
+	}
+	try {	
+		if(responseText != ""){
+			obj = JSON.parse(responseText);
+
+			if(typeof(obj.versionLS) != "undefined"){
+				alert("localServer exe version: " + obj.versionLS); //localServer exe version			
+			}
+			
+			if(obj.uuid != localServer_UUID){ //非綁定localServer，因此仍要繼續掃port
+				//alert("非綁定localServer");      			
+				return -1;			
+			}
+            			
+			if(obj.ret == 0x0){ //網頁連線成功後，自動執行initConnect 	  
+				alert("連接埠:"+pluginPort[pluginPortIndex]);
+				$.unblockUI(); 	     
+				initConnect();
+				return 0;                         			     
+			}else{ //ex: 網頁Origin url為未授權的網站
+				ShowErrorMessage(obj.ret);
+				$.unblockUI();				
+				return 0;		
+			}		          
+		}else{
+				//alert("responseText is empty");
+				return -1;               
+		}  
+	} catch(err) {  //使用IE，如果port被其他程式佔去，可能會回404，因此仍要繼續掃port
+				return -1;
+	} 
+} 
+
+//處理localServer http連線錯誤狀況
+function errorXmlhttpCallback(xmlhttp, err)
+{
+    var exp = xmlhttp;
+  	if(!exp && typeof exp != "undefined" && exp != 0)
+  	{
+      alert("readyState:"+xmlhttp.readyState+",status:"+xmlhttp.status+",err:"+err.message);  	
+    }else
+    {
+      alert("err:"+err.message);
+    }  	
+  	$.unblockUI();
+}	
+
+//網頁為採用XMLHttpRequest + callback(非同步)範例    
+//Note:IE8/IE9不支援 "同步呼叫"，且在使用XMLHttpRequest會有限制(ex:不支援跨網域請求)
+function httpSendRequest(sendStr, callbackFunc)
+{
+  //載具伺服器
+	var url = "https://localhost:"+pluginPort[pluginPortIndex]+"/CHTCertTokenServer/";
+
+	xmlhttp = new XMLHttpRequest();   // new HttpRequest instance 			
+	try {
+		xmlhttp.open("POST", url, true );
+		xmlhttp.onload = function()
+		{			
+			var responseText = xmlhttp.responseText;
+			if (callbackFunc != initConnectCallback)
+			{
+			  if (responseText != "")
+			  {
+				  responseText = decryptMessage(responseText);
+				}
+			}
+			callbackFunc(responseText); 
+		}
+
+		//retry httpSendRequest機制: 為解決Win10 Edge偶爾連不到localServer(http error: 2ef3)，因此若發生連線錯誤的時候再試一次
+		xmlhttp.onerror = function()
+		{
+			httpSendRequestRetry(sendStr, callbackFunc);
+		}
+
+		xmlhttp.send(sendStr);		
+	}
+	catch(err) {
+		//alert("readyState:" + xmlhttp.readyState + ",status:" + xmlhttp.status + ",err:" + err.message);
+		//$.unblockUI();
+		
+		//IE10 limitation: Origin與Host必須同區域，或者Origin所處區域的安全強度較Host來得高
+		//若使用者將https://localhost加入信任的網站，需要求使用者把憑證網站加入信任的網站。  
+		//Note:憑證網站有可能是嵌在 iframe 裡)，使用者是看不到的 ，所以請自行增加一個系統參數
+		var number = err.number & 0xFFFF;  		
+		var facilityCode = err.number>>16 & 0x1FFF;  
+		var description = err.description;  
+		if (number == 5 && facilityCode == 7) {
+			if(selLanguage=="1"){
+			  err.message = description + "(請將憑證網站加入信任的網站。工具->網際網路選項->安全性->信任的網站，點選「網站」新增"+RaWebDomain+")";
+			}else if(selLanguage=="2"){
+			  err.message = description + "(请将凭证网站加入信任的网站。工具->网际网路选项->安全性->信任的网站，点选「网站」新增"+RaWebDomain+")";
+			}else{
+			  err.message = description + "(Please add the certificate application website to the trusted website. Tools->Internet Options->Security->Trusted Sites, click site add"+RaWebDomain+")";
+			}
+		}        
+                  
+		errorXmlhttpCallback(xmlhttp, err);		
+	}	
+
+}
+
+//retry httpSendRequest機制: 為解決Win10 Edge偶爾連不到localServer(http error: 2ef3)，因此若發生連線錯誤的時候再試一次
+function httpSendRequestRetry(sendStr, callbackFunc)
+{
+  //載具伺服器
+	var url = "https://localhost:"+pluginPort[pluginPortIndex]+"/CHTCertTokenServer/";
+
+	xmlhttp = new XMLHttpRequest();   // new HttpRequest instance 			
+	try {
+		xmlhttp.open("POST", url, true );
+		xmlhttp.onload = function()
+		{			
+			var responseText = xmlhttp.responseText;
+			if (callbackFunc != initConnectCallback)
+			{
+			  if (responseText != "")
+			  {
+				  responseText = decryptMessage(responseText);
+				}
+			}
+			callbackFunc(responseText); 
+		}
+
+		//retry httpSendRequest機制: 若發生連線錯誤的時候再試一次，仍失敗
+		xmlhttp.onerror = function()
+		{
+			alert("XMLHttpRequest fail again!"); //請自行處理錯誤顯示
+			$.unblockUI();   
+		}
+
+		xmlhttp.send(sendStr);		
+	}
+	catch(err) {
+		//alert("readyState:" + xmlhttp.readyState + ",status:" + xmlhttp.status + ",err:" + err.message);
+		//$.unblockUI();
+    
+		//IE10 limitation: Origin與Host必須同區域，或者Origin所處區域的安全強度較Host來得高
+		//若使用者將https://localhost加入信任的網站，需要求使用者把憑證網站加入信任的網站。  
+		//Note:憑證網站有可能是嵌在 iframe 裡)，使用者是看不到的 ，所以請自行增加一個系統參數
+		var number = err.number & 0xFFFF;  		
+		var facilityCode = err.number>>16 & 0x1FFF;  
+		var description = err.description;  
+		if (number == 5 && facilityCode == 7) {
+			if(selLanguage=="1"){
+			  err.message = description + "(請將憑證網站加入信任的網站。工具->網際網路選項->安全性->信任的網站，點選「網站」新增"+RaWebDomain+")";
+			}else if(selLanguage=="2"){
+			  err.message = description + "(请将凭证网站加入信任的网站。工具->网际网路选项->安全性->信任的网站，点选「网站」新增"+RaWebDomain+")";
+			}else{
+			  err.message = description + "(Please add the certificate application website to the trusted website. Tools->Internet Options->Security->Trusted Sites, click site add"+RaWebDomain+")";
+			}
+		}        
+                  
+		errorXmlhttpCallback(xmlhttp, err);		
+	}	
+
+}
+
+function decryptMessage(responseText)
+{            
+	var obj = JSON.parse(responseText);
+	if (obj.ret == 0x0)
+	{	
+		var responseText  = doAESDecrypt(obj.content);
+		return responseText;
+	}
+	else
+	{
+	  ShowErrorMessage(obj.ret);		
+		$.unblockUI();
+		return "";         		
+	}                      
+}
+
+//此範例可由Javascript產生Encrypted sessionkey
+//note: 正式上線時，需透過Server直接取得Encrypted sessionkey。因為將ras key暴露在javascript裡是非常不安全的作法
+function getEncryptedSessionkey()
+{
+	aesKey = document.getElementById("sessionkey").value;
+  document.getElementById("EncryptedSessionkey").value = doRSAEncrypt(aesKey);
+}
+
+function GetTokenSerialNo()
+{
+  	$.blockUI({fadeIn: 0 });
+  	
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+    argObject.func = "GetTokenSerialNo"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("GetTokenSerialNo: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";	
+    			
+    httpSendRequest(sendStr, GetTokenSerialNoCallback);
+
+}
+
+function GetTokenSerialNoCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+			alert("載具序號:"+obj.strTokenSerialNo);		
+			document.getElementById("strTokenSerialNo").value = obj.strTokenSerialNo;
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		          
+  }                 				
+
+	$.unblockUI();
+}
+
+function DetectToken()
+{
+  	$.blockUI({fadeIn: 0 });
+  	
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+  	argObject.strTokenSerialNo = document.getElementById("strTokenSerialNo").value;
+    argObject.func = "DetectToken"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("DetectToken: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";	
+    	  	
+    httpSendRequest(sendStr, DetectTokenCallback);
+}
+
+function DetectTokenCallback(responseText){
+	var strTokenType = document.getElementById("strTokenType").value;
+	var strTokenSerialNo = document.getElementById("strTokenSerialNo").value;
+
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+			alert("存在種類為:"+strTokenType+"序號為:"+strTokenSerialNo+"的載具");
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		        
+  }        		
+
+  $.unblockUI();
+}
+
+function DetectClientEnv()
+{
+  	$.blockUI({fadeIn: 0 });
+  
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+  	argObject.strTokenSerialNo = document.getElementById("strTokenSerialNo").value;
+    argObject.func = "DetectClientEnv"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("DetectClientEnv: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";	
+   	
+    httpSendRequest(sendStr, DetectClientEnvCallback);	
+}
+
+function DetectClientEnvCallback(responseText){
+	var bDTDRIVER = "0";
+	var strDTDRIVERVS = "";
+	var bDTTOKEN = "0";
+	var bDOPENSESSION = "0";
+	var bDTUSBLIMIT = "0";
+	var bDTSCARDSVR = "0";
+	
+	if(responseText != ""){
+  	obj = JSON.parse(responseText);
+  	
+  	if (obj.bDTSCARDSVR == true)
+  		bDTSCARDSVR = "1";
+  	else
+  		bDTSCARDSVR = "0";
+  
+  	if (obj.bDTDRIVER == true)
+  		bDTDRIVER = "1";
+  	else
+  		bDTDRIVER = "0";
+  
+  	if (obj.bDTUSBLIMIT == true)
+  		bDTUSBLIMIT = "1";
+  	else
+  		bDTUSBLIMIT = "0";
+  
+  	if (obj.bDTTOKEN == true)
+  		bDTTOKEN = "1";
+  	else
+  		bDTTOKEN = "0";
+  
+  	if (obj.bDOPENSESSION == true)
+  		bDOPENSESSION = "1";
+  	else
+  		bDOPENSESSION = "0";
+  			
+  	if (obj.strDTDRIVERVS)
+  		strDTDRIVERVS = obj.strDTDRIVERVS;
+  	else
+  		strDTDRIVERVS = "";      				
+      				
+  	if(obj.ret == 0x0){
+  		alert("bDTSCARDSVR = "+bDTSCARDSVR+", bDTDRIVER = "+bDTDRIVER+", strDTDRIVERVS = "+strDTDRIVERVS+", bDTUSBLIMIT = "+bDTUSBLIMIT+ ", bDTTOKEN = "+bDTTOKEN+", bDOPENSESSION = "+bDOPENSESSION);
+  	}else{ 		
+			ShowErrorMessage(obj.ret); 	  
+			alert("bDTSCARDSVR = "+bDTSCARDSVR+", bDTDRIVER = "+bDTDRIVER+", strDTDRIVERVS = "+strDTDRIVERVS+", bDTUSBLIMIT = "+bDTUSBLIMIT+ ", bDTTOKEN = "+bDTTOKEN+", bDOPENSESSION = "+bDOPENSESSION);          		
+  	}	
+  }	          
+									
+	$.unblockUI();				
+}
+
+function showVersion()
+{	
+  	$.blockUI({fadeIn: 0 });
+  	
+  	var argObject = new Object();  	
+    argObject.func = "GetVersion"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("showVersion: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";	
+   
+    httpSendRequest(sendStr, GetVersionCallback); 	
+}
+	
+function GetVersionCallback(responseText){
+	if(responseText != ""){
+  	obj = JSON.parse(responseText);
+  	alert(obj.version);	   
+  }       
+  
+  $.unblockUI();	
+}	
+
+function GenCSR()
+{
+  	$.blockUI({fadeIn: 0 });
+  
+  	document.getElementById("CertReq").value = "";
+    
+    var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+  	argObject.strTokenSerialNo = document.getElementById("strTokenSerialNo").value;
+  	argObject.strCertType = document.getElementById("CertType").value;
+   	argObject.strCleanCachedPIN = document.getElementById("strCleanCachedPIN2").value; 
+   	argObject.func = "GenPKCS10";
+  
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("GenPKCS10: orisendStr"+orisendStr);
+   
+    var cipherText = doAESEncrypt(orisendStr);     
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";	
+   		
+    httpSendRequest(sendStr, GenPKCS10Callback);		
+}
+
+function GenPKCS10Callback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+			alert(" 憑證請求檔產生成功: " + obj.strB64PKCS10);
+			document.getElementById("CertReq").value = obj.strB64PKCS10;			
+		}else{
+			//alert("0x"+parseInt(obj.ret, 16).toString(16));
+			ShowErrorMessage(obj.ret);
+		}		          
+  }							
+
+	$.unblockUI();	
+}
+
+function ImportCert()
+{
+  	$.blockUI({fadeIn: 0 });
+  	document.getElementById("CertB64Value").value = "";
+  	
+  	var argObject = new Object();  	
+    argObject.func = "ImportCert"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("ImportCert: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";		
+  	  
+    httpSendRequest(sendStr, ImportCertCallback);	
+}
+
+function ImportCertCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+	    document.getElementById("CertB64Value").value = obj.strCertB64Value;
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		          
+  }			
+
+	$.unblockUI();
+}
+
+function WriteCert()
+{
+  	$.blockUI({fadeIn: 0 });	
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+  	argObject.strTokenSerialNo = document.getElementById("strTokenSerialNo").value;
+  	argObject.strB64Cert = document.getElementById("CertB64Value").value; 	
+  	argObject.strCertType = "encCert";
+  	argObject.strCleanCachedPIN = document.getElementById("strCleanCachedPIN4").value;       	
+    argObject.func = "WriteCert"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("WriteCert: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);  
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";		
+  	 	
+    httpSendRequest(sendStr, WriteCertCallback);
+}
+
+function WriteCertCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+      alert("安裝憑證成功");
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		          
+  }		
+	
+	$.unblockUI();
+}
+
+function VerifyCertValid()
+{
+  	$.blockUI({fadeIn: 0 });
+  
+    document.getElementById("GenSignValue").value = "";
+
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+  	argObject.strTokenSerialNo = document.getElementById("strTokenSerialNo").value;
+  	argObject.strSubject = document.getElementById("strSubject").value;
+  	argObject.strIssuerName = document.getElementById("strIssuerName").value;
+  	argObject.strSerialNum = document.getElementById("strSerialNum").value;
+  	argObject.strNotAfter = document.getElementById("strNotAfter").value;
+  	argObject.strKeyUsage = document.getElementById("strKeyUsage").value;
+  	argObject.strTBS = document.getElementById("strTBS").value; //pchome
+  	argObject.strCleanCachedPIN = document.getElementById("strCleanCachedPIN").value;            	
+    argObject.func = "P7SignData"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("VerifyCertValid: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);  
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";
+    	
+    httpSendRequest(sendStr, VerifyCertValidCallback);	 
+}
+
+function VerifyCertValidCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+		  document.getElementById("GenSignValue").value = obj.strB64P7SignData;
+		}else{
+			ShowErrorMessage(obj.ret);
+		}		          
+  }    			
+
+	$.unblockUI();
+}
+
+
+function ChangePIN() {
+  	$.blockUI({fadeIn: 0 });
+  	
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+  	argObject.strTokenSerialNo = document.getElementById("strTokenSerialNo").value;  	
+    argObject.func = "ChangePIN"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("ChangePIN: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);   
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";	
+   
+    httpSendRequest(sendStr, ChangePINCallback);
+}	
+
+function ChangePINCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+		  alert("密碼變更成功");
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		        
+  }
+
+	$.unblockUI();
+}
+	
+function PadLeft(str,length){
+	if(str.length >= length)
+	return str;
+	else
+	return PadLeft("0" +str,length);
+}
+function  ClearToken()
+{
+  	$.blockUI({fadeIn: 0 });
+  	
+  	var d = new Date();
+  	//alert(d.toUTCString());
+  	var strUTCTime = PadLeft(d.getUTCFullYear().toString(), 4)+PadLeft((d.getUTCMonth()+1).toString(),2)+PadLeft(d.getUTCDate().toString(),2)+PadLeft(d.getUTCHours().toString(),2)+PadLeft(d.getUTCMinutes().toString(),2)+PadLeft(d.getUTCSeconds().toString(),2);
+  	
+  	//strUTCTime = 20200212054000; //only for test: 若是TW time = UTC+8hrs; 記得strUTCTime要-8hrs
+    alert(strUTCTime);
+  	
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strTokenType = document.getElementById("strTokenType").value;
+  	argObject.strTokenSerialNo = document.getElementById("strTokenSerialNo").value;
+  	argObject.strUTCTime = strUTCTime;
+  	argObject.strCleanCachedPIN = document.getElementById("strCleanCachedPIN3").value;          	
+    argObject.func = "DeleteInvalidCert"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("DeleteInvalidCert: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";
+    	  	
+    httpSendRequest(sendStr, DeleteInvalidCertCallback);	
+}
+
+function DeleteInvalidCertCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+		  alert("清除成功");
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		         
+  }					
+
+	$.unblockUI();
+}
+
+//若需更新sessionkey，須再執行一次initConnect 
+function initConnect()
+{
+	$.blockUI({fadeIn: 0 }); 
+
+  document.all.initConnectRet.value = "";
+    	
+  //正式版應該由後台取得  
+	aesKey = document.getElementById("sessionkey").value;   //Note:須更新aesKey，以供之後加解密
+	
+  strEncryptSessionkey = document.getElementById("EncryptedSessionkey").value;    
+
+ 
+	var sendStr = "{\"func\":\"initConnect\",\"strInitData\":\""+strEncryptSessionkey+"\"}";
+	
+  httpSendRequest(sendStr, initConnectCallback);
+}
+
+function initConnectCallback(responseText){
+  if(responseText != "")
+  {
+  	obj = JSON.parse(responseText);
+  	//alert(obj.ret);
+  	if(obj.ret == 0x0){	//連線初始化成功					  
+  		document.getElementById("initConnectRet").value = obj.ret;      		  
+  	} else {
+  		document.getElementById("initConnectRet").value = obj.ret;
+			ShowErrorMessage(obj.ret);    			
+    }
+  }
+    				
+	$.unblockUI();	
+}
+
+function errorCallback(funName){
+	alert(funName+":POST Error!");
+	$.unblockUI();
+}
+
+function doRSAEncrypt(cipherText)
+{
+     // Encrypt with the public key...   
+    var encrypt = new JSEncrypt();
+    RSACryptPubkey =document.getElementById("RSACryptPubkey").value;
+    encrypt.setPublicKey(RSACryptPubkey);      
+    var encrypted = encrypt.encrypt(cipherText);        
+    return encrypted;      
+} 
+
+function doAESEncrypt(plainText)
+{
+    var key = CryptoJS.enc.Hex.parse(aesKey);
+    aesIv =document.getElementById("aesIv").value;
+    var iv  = CryptoJS.enc.Hex.parse(aesIv);
+
+    var encrypted = CryptoJS.AES.encrypt(plainText, key, { iv: iv });
+ 
+    return encrypted;
+}	
+
+function doAESDecrypt(cipherText)
+{
+    var key = CryptoJS.enc.Hex.parse(aesKey);
+    aesIv =document.getElementById("aesIv").value;    
+    var iv  = CryptoJS.enc.Hex.parse(aesIv);
+
+    var decrypted = CryptoJS.AES.decrypt(cipherText, key, { iv: iv });
+
+    return decrypted.toString(CryptoJS.enc.Utf8);	
+}	
+
+//交易
+function P7SignedData()
+{
+  	$.blockUI({fadeIn: 0 });
+
+  	document.all.strB64P7SignData.value = "";
+  
+  	var argObject = new Object();  	
+  	argObject.strLanguage = document.getElementById("strLanguage").value;
+  	argObject.strSubject = document.getElementById("strSubject").value;
+  	argObject.strIssuerName = document.getElementById("strIssuerName").value;
+  	argObject.strSerialNum = document.getElementById("strSerialNum").value;
+  	argObject.strNotAfter = document.getElementById("strNotAfter").value;
+  	argObject.strKeyUsage = document.getElementById("strKeyUsage").value;
+  	
+  	argObject.strPullDeviceOut = document.getElementById("strPullDeviceOut").value; 
+  	argObject.strTBS = document.getElementById("strTBS").value;             
+    argObject.func = "P7SignedData"; 
+    var orisendStr = JSON.stringify(argObject);
+  	//alert("VerifyCertValid: orisendStr"+orisendStr);
+  
+    var cipherText = doAESEncrypt(orisendStr);  
+  	var sendStr = "{\"func\":\"Connected\",\"content\":\""+cipherText+"\"}";
+    	 
+    httpSendRequest(sendStr, P7SignedDataCallback);
+}
+
+function P7SignedDataCallback(responseText){
+	if(responseText != ""){
+		obj = JSON.parse(responseText);
+		if(obj.ret == 0x0){
+		  document.all.strB64P7SignData.value = obj.strB64P7SignData;
+		}else{
+			ShowErrorMessage(obj.ret);			
+		}		          
+  }    			
+
+	$.unblockUI();
+}
+
+function updateLanguage()  {
+	selLanguage = document.getElementById("strLanguage").value; 		
+}
+
+function ShowErrorMessage(nRc)  {	
+	alert(GetErrorMessage(nRc, selLanguage));	
+}
+
+</script>
+
+<p align="left">
+
+<font face="標楷體" color="Red" size="3">連線後，先執行initConnect</font><br>
+<label for="RSACryptPubkey">Public Key</label><br/>
+    <textarea id="RSACryptPubkey" rows="15" cols="65">-----BEGIN PUBLIC KEY-----MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2n8Bem1kEsboctNiUVbfsOAMGGRRUFDDHGLXAWSTIO1PLwEMBW92CmOgbvUDfTSHb/tWIhcxV4dPMsz//ljYkXQIGUzBosDzvWRSbm00dPAYrqa0J9hTopAAmuoOkIlYElsyDhA7okiogrqWHKDGSNfaEcTpMpAkOM4xneu5OIMHDCRDYBYsms8yL7GAJCIhBOSzZ+d00XmGwhnCjekh6U7qEAkU5tPFMX9LchVSi4KOAViqf4UWp9p8+9yd9dDcdV1NXjOa4GtZnLMx300Pq8ftHB//3ITjz/iphwznkIbFsFbEHCsjaJUHQ4iEV1kgXENjigMR8rFmLtEn6l1o9QIDAQAB-----END PUBLIC KEY-----</textarea><br/>
+AES IV: <input type="text" id="aesIv" name="aesIv" size="50" value="8be168d2e0071f67ed6f30127f5998d2" /> <br/>
+sessionkey:<textarea id="sessionkey" name="sessionkey" rows="1" cols="64" value="">0022277163741128509754295983040841817770812581997148583390329647</textarea>(256-bit key,WordArray長度64長度64)<br>
+Encrypted sessionkey:<textarea id="EncryptedSessionkey" name="EncryptedSessionkey" rows="10" cols="80">UUnQSrxoTNu1C6rjzwstLIjHiffquJfJr/SnfnK5SYGlfkO79Mo0L4v6VIPccU2BoBcCb5LkJZkAdetQ/Wy1qqIEVg7QEubGPQhol1L9DAW0XHEsYQK0Z2fIOFpPvTuKN0kqt/lD6hXftN1sm96hGepX5vxWox9s+vLbYYv7Ek/w9wf9ReD5RqC3cHu3CtVL1nKZwvNVgwmFvM8P7x4qxMmq1YT+qsjQlsSXPx7OIXQbIag1w8DZAdPqeQbgA37vNPZ3d4Jt8l/6T2KdJLpT3r0LR+iqVz7cmdbl/HEpwcc4JkHUvp2ZtV9WXJYMgauM3OTmrKHXwDMDrQWGAUQl1w==</textarea>
+<input type="button" value="getEncryptedSessionkey(for RD)" onclick="getEncryptedSessionkey()">(此為RD測試用。建議正式上線時，需透過Web Server直接取得Encrypted sessionkey)<br><br>
+<br><input type="button" value="initConnect" onclick="initConnect()">(步驟:需先設定sessionkey->產生Encrypted sessionkey->最後再執行initConnect)<br>
+Ret:<input type="text" id="initConnectRet" name="initConnectRet"><br>
+<hr>
+
+<P align=center><FONT face=標楷體 color=blue size=7>憑證功能測試</FONT></P>
+語系:<input type="text" id="strLanguage" name="strLanguage" onchange = "updateLanguage()" size="1" value="1">(0:英文 1:繁體中文 2:簡體中文, 未設或其它值為繁體中文)<br>
+</p><hr>
+<hr>
+載具指定<BR>
+種類:<input type="text" id="strTokenType" name="strTokenType" size=1 value="2">(1:ikey2032, 2:etoken, 未設為1)
+<BR>
+序號:<input type="text" id="strTokenSerialNo" name="strTokenSerialNo" size=50 value="">(未設則指定符合strTokenType的第一個slot上的載具)
+<BR>
+<HR>
+環境檢測使用<BR>
+<input type = "button" value = "環境檢測" onclick = "DetectClientEnv()"><BR>
+<HR>
+元件版本<BR>
+<input type = "button" value = "元件版本" onclick = "showVersion()"><BR>
+<HR>
+元件支援載具申請憑證、安裝憑證<BR>
+<input type="text" id="CertType" name="CertType" value = "1" size=1>(簽章:1/加密:2)<BR>
+產生憑證請求檔前，是否清除暫存PIN:<input type="text" id="strCleanCachedPIN2" name="strCleanCachedPIN2"  size=5>(1:為清除 0:為不清除 預設為1)<BR> 
+<input type = "button" value = "產生憑證請求檔" onclick = "GenCSR()">&nbsp&nbsp<BR>
+憑證請求檔:<BR>
+<textarea id='CertReq' name='CertReq' rows="7" cols="80"></textarea><BR><BR>
+<input type="button" value="取得憑證(for RD)" onclick="ImportCert()" />(c:\certtest.cer)<BR>
+憑證內容 : (X509 Base64 格式)<BR>
+<textarea id='CertB64Value' name='CertB64Value' rows="10" cols="80"></textarea><BR>
+安裝憑證:<BR>
+是否清除暫存PIN:<input type="text" id="strCleanCachedPIN4" name="strCleanCachedPIN4"  size=5 value = "0">(1:為清除 0:為不清除 預設為1)<BR>
+<input type="button" value="安裝憑證" onclick="WriteCert()" /><BR>
+<HR>
+憑證列舉條件<BR>
+主旨:<input type="text" id="strSubject" name="strSubject" size=50><BR>
+發行者名稱:<input type="text" id="strIssuerName" name="strIssuerName" size=50><BR>
+憑證序號:<input type="text" id="strSerialNum" name="strSerialNum" size=50><BR>
+憑證狀態:<input type="text" id="strNotAfter" name="strNotAfter" size=1 value="0">(1:為有效 0:為不檢查 預設為1)<BR>
+金鑰用途:<input type="text" id="strKeyUsage" name="strKeyUsage" size=1 value="192">(預設digitalSignature bit和Non-Repudiation bit為1)<BR>
+<!-- strKeyUsage: 若該憑證由testCA發的，則輸入128; 其他憑證中心發的，則可嘗試輸入192 -->
+<BR>ToBeSign字串: <textarea id='strTBS' name='strTBS' rows="7" cols="80">ToBeSign</textarea><BR><BR>
+1.
+展期簽章驗證合法性<BR>
+是否清除暫存PIN:<input type="text" id="strCleanCachedPIN" name="strCleanCachedPIN"  size=5>(1:為清除 0:為不清除 預設為1)<BR> 
+<INPUT TYPE = "button" value = "產生簽章" onclick = "VerifyCertValid()"><BR>
+簽章成功資料 : (Base64 格式)<BR>
+<textarea id='GenSignValue' name='GenSignValue' rows="10" cols="80"></textarea><BR>
+2.
+<FONT color=blue>交易測試 (不指定載具種類和序號。根據憑證列舉條件，列舉偵測到全部支援載具種類的憑證。每次都需強制輸入密碼。)</FONT><BR>
+是否啟用載具插拔驗證:<input type="text" id="strPullDeviceOut" name="strPullDeviceOut"  size=5 value ="0">(0:關閉)<BR> 
+
+<input type = "button" value = "交易文字簽章" onclick = "P7SignedData()"><BR>
+簽章結果:<BR>
+<textarea id='strB64P7SignData' name='strB64P7SignData' rows="7" cols="80"></textarea><BR>
+
+
+<HR>
+變更密碼功能測試 <BR>
+<INPUT TYPE = "button" value = "變更密碼" onclick = "ChangePIN()"><BR>
+<HR>
+清除過期憑證功能測試(同時刪除所有未寫入憑證的key，及沒成對key的憑證) <BR>
+是否清除暫存PIN:<input type="text" id="strCleanCachedPIN3" name="strCleanCachedPIN3"  size=5>(1:為清除 0:為不清除 預設為1)<BR> 
+<INPUT TYPE = "button" value = "清除過期憑證" onclick = "ClearToken()"><BR>
+<HR>
+取得載具序號(符合strTokenType的第一個slot上的載具)<BR>
+<INPUT TYPE = "button" value = "取得載具序號" onclick = "GetTokenSerialNo()"><BR>
+<HR>
+檢查載具是否存在<BR>
+<INPUT TYPE = "button" value = "檢查載具是否存在" onclick = "DetectToken()"><BR>
+<HR>
+<HR>
+
+
+
+</body></html>
